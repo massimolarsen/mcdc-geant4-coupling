@@ -1,0 +1,22 @@
+build/
+.qt/
+.pytest_cache/
+__pycache__/
+*.py[cod]
+*.so
+*.dylib
+*.a
+*.o
+*.d
+
+# CMake generated files
+CMakeCache.txt
+CMakeFiles/
+CTestTestfile.cmake
+Makefile
+cmake_install.cmake
+
+# Local editor and OS files
+.DS_Store
+.vscode/
+.idea/
