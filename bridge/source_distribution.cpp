@@ -158,17 +158,10 @@ void SourceDistribution::Clear()
 
 Primary SourceDistribution::Sample() const
 {
-  if (!loaded_) {
-    throw std::runtime_error("SourceDistribution::Sample called before Load.");
-  }
-
   // sample source distribution bin
   const double source_pick = G4UniformRand() * total_weight_;
   auto source_it = std::lower_bound(cdf_.begin(), cdf_.end(), source_pick);
   std::size_t source_idx = static_cast<std::size_t>(std::distance(cdf_.begin(), source_it));
-  if (source_idx >= cdf_.size()) {
-    source_idx = cdf_.size() - 1;
-  }
 
   // Python flattens weights from shape (mu, azi, energy, face, u, v) in C order.
   const std::size_t i_v = source_idx % n_v_;

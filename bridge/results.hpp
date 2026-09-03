@@ -12,8 +12,6 @@ namespace g4bridge
 struct Results
 {
   // session state
-  bool initialized = false;
-  bool has_source = false;
   std::string physics_list = "";
   std::size_t loaded_primaries = 0;
 
@@ -30,8 +28,6 @@ struct Results
   std::vector<double> component_edep_mev;
   std::vector<double> component_mass_kg;
   std::vector<double> component_dose_gy;
-
-  std::string status = "created";
 
   // clear fields that are produced by a run or source load
   void ResetRuntime();

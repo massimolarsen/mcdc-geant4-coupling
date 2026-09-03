@@ -32,7 +32,6 @@ class PrimaryBank
       const pybind11::array_t<double, pybind11::array::c_style | pybind11::array::forcecast>& bank);
     void Clear();
     std::size_t Size() const { return rows_.size(); }
-    bool Empty() const { return rows_.empty(); }
     const Primary& At(std::size_t idx) const { return rows_.at(idx); }
 
   private:

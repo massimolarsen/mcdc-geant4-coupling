@@ -7,6 +7,7 @@
 #include <memory>
 #include <sstream>
 #include <stdexcept>
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -114,6 +115,7 @@ class BridgeRunAction : public G4UserRunAction
 
     void EndOfRunAction(const G4Run* run) override
     {
+      G4AccumulableManager::Instance()->Merge();
       if (!record_results_) {
         return;
       }
@@ -126,7 +128,6 @@ class BridgeRunAction : public G4UserRunAction
       }
 
       // collect dose from accumulated energy deposition
-      G4AccumulableManager::Instance()->Merge();
       const G4double edep = edep_.GetValue();
       const auto* det_construction = static_cast<const DetectorConstruction*>(
         G4RunManager::GetRunManager()->GetUserDetectorConstruction());
@@ -150,8 +151,7 @@ class BridgeRunAction : public G4UserRunAction
       G4double scored_mass = 0.0;
       for (std::size_t i = 0; i < component_edep_.size(); ++i) {
         const G4double component_edep_value = component_edep_[i]->GetValue();
-        const G4double component_mass =
-          (i < scoring_volumes.size()) ? scoring_volumes[i]->GetMass(false, false) : 0.0;
+        const G4double component_mass = scoring_volumes[i]->GetMass(false, false);
         scored_mass += component_mass;
         results_.component_edep_mev[i] = component_edep_value / MeV;
         results_.component_mass_kg[i] = component_mass / kg;
@@ -210,7 +210,6 @@ class BridgeEventAction : public G4UserEventAction
   public:
     BridgeEventAction(BridgeRunAction& run_action, std::size_t n_components)
         : run_action_(run_action),
-          component_raw_edep_(n_components, 0.0),
           component_weighted_edep_(n_components, 0.0)
     {
     }
@@ -220,7 +219,6 @@ class BridgeEventAction : public G4UserEventAction
       // reset event energy deposition
       raw_edep_ = 0.0;
       edep_ = 0.0;
-      std::fill(component_raw_edep_.begin(), component_raw_edep_.end(), 0.0);
       std::fill(component_weighted_edep_.begin(), component_weighted_edep_.end(), 0.0);
     }
 
@@ -234,7 +232,6 @@ class BridgeEventAction : public G4UserEventAction
     {
       raw_edep_ += raw_edep;
       edep_ += weighted_edep;
-      component_raw_edep_[component_idx] += raw_edep;
       component_weighted_edep_[component_idx] += weighted_edep;
     }
 
@@ -242,7 +239,6 @@ class BridgeEventAction : public G4UserEventAction
     BridgeRunAction& run_action_;
     G4double raw_edep_ = 0.0;
     G4double edep_ = 0.0;
-    std::vector<G4double> component_raw_edep_;
     std::vector<G4double> component_weighted_edep_;
 };
 
@@ -257,16 +253,18 @@ class BridgeSteppingAction : public G4UserSteppingAction
       if (!scoring_volumes_cached_) {
         const auto* det_construction = static_cast<const DetectorConstruction*>(
           G4RunManager::GetRunManager()->GetUserDetectorConstruction());
-        const auto& scoring_volumes = det_construction->GetScoringVolumes();
-        for (std::size_t i = 0; i < scoring_volumes.size(); ++i) {
-          scoring_volume_indices_[scoring_volumes[i]] = i;
+        const auto& scoring_names = det_construction->GetScoringNames();
+        for (std::size_t i = 0; i < scoring_names.size(); ++i) {
+          scoring_volume_indices_[scoring_names[i]] = i;
         }
         scoring_volumes_cached_ = true;
       }
 
       G4LogicalVolume* volume =
         step->GetPreStepPoint()->GetTouchableHandle()->GetVolume()->GetLogicalVolume();
-      const auto component = scoring_volume_indices_.find(volume);
+      // In Geant4 MT runs, worker geometry can use cloned logical-volume
+      // pointers, so match by stable component name instead of pointer value.
+      const auto component = scoring_volume_indices_.find(volume->GetName());
       if (component == scoring_volume_indices_.end()) {
         return;
       }
@@ -279,7 +277,7 @@ class BridgeSteppingAction : public G4UserSteppingAction
 
   private:
     BridgeEventAction& event_action_;
-    std::unordered_map<G4LogicalVolume*, std::size_t> scoring_volume_indices_;
+    std::unordered_map<std::string, std::size_t> scoring_volume_indices_;
     bool scoring_volumes_cached_ = false;
 };
 
@@ -422,8 +420,6 @@ void Session::initialize()
   G4UImanager::GetUIpointer()->ApplyCommand("/tracking/verbose 0");
 
   initialized_ = true;
-  results_.initialized = true;
-  results_.status = "initialized";
 }
 
 void Session::load_primaries(
@@ -438,9 +434,7 @@ void Session::load_primaries(
 
   // update active source summary
   has_source_ = true;
-  results_.has_source = true;
   results_.loaded_primaries = primary_bank_->Size();
-  results_.status = "primaries_loaded";
 }
 
 void Session::load_source_distribution(
@@ -465,9 +459,7 @@ void Session::load_source_distribution(
 
   // update active source summary
   has_source_ = true;
-  results_.has_source = true;
   results_.loaded_primaries = source_distribution_->Size();
-  results_.status = "distribution_loaded";
 }
 
 void Session::beam_on()
@@ -489,12 +481,6 @@ void Session::beam_on()
 
   // run Geant4 events
   run_manager_->BeamOn(static_cast<int>(n_events));
-  results_.status = "ok";
-
-  std::cout << "[geant4_bridge] beam_on loaded_rows=" << results_.loaded_primaries
-            << " events_run=" << results_.last_events_run
-            << " physics_list=" << results_.physics_list
-            << " status=" << results_.status << "\n";
 }
 
 Results Session::get_results() const
@@ -524,11 +510,8 @@ void Session::close()
   primary_bank_->Clear();
   source_distribution_->Clear();
   results_.ResetRuntime();
-  results_.initialized = false;
-  results_.has_source = false;
   results_.loaded_primaries = 0;
   results_.physics_list = physics_list_name_;
-  results_.status = "closed";
 }
 
 void Session::ValidateGeometryConfig(const SessionConfig& config)

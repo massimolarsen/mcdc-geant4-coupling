@@ -31,21 +31,8 @@ void BankPrimaryGeneratorAction::GeneratePrimaries(G4Event* event)
   // choose active source for this event
   const std::size_t event_id = static_cast<std::size_t>(event->GetEventID());
   if (source_distribution_.Loaded()) {
-    if (event_id >= source_distribution_.Size()) {
-      std::ostringstream msg;
-      msg << "Event " << event_id << " requested but source distribution size is "
-          << source_distribution_.Size() << ".";
-      throw std::runtime_error(msg.str());
-    }
     GeneratePrimary(*event, source_distribution_.Sample());
     return;
-  }
-
-  if (event_id >= primary_bank_.Size()) {
-    std::ostringstream msg;
-    msg << "Event " << event_id << " requested but primary bank size is " << primary_bank_.Size()
-        << ".";
-    throw std::runtime_error(msg.str());
   }
 
   GeneratePrimary(*event, primary_bank_.At(event_id));

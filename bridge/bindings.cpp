@@ -33,8 +33,6 @@ PYBIND11_MODULE(geant4_bridge, m)
 
   // expose run results
   py::class_<g4bridge::Results>(m, "RunResult")
-    .def_readonly("initialized", &g4bridge::Results::initialized)
-    .def_readonly("has_source", &g4bridge::Results::has_source)
     .def_readonly("physics_list", &g4bridge::Results::physics_list)
     .def_readonly("loaded_primaries", &g4bridge::Results::loaded_primaries)
     .def_readonly("last_events_run", &g4bridge::Results::last_events_run)
@@ -48,8 +46,7 @@ PYBIND11_MODULE(geant4_bridge, m)
     .def_readonly("component_names", &g4bridge::Results::component_names)
     .def_readonly("component_edep_mev", &g4bridge::Results::component_edep_mev)
     .def_readonly("component_mass_kg", &g4bridge::Results::component_mass_kg)
-    .def_readonly("component_dose_gy", &g4bridge::Results::component_dose_gy)
-    .def_readonly("status", &g4bridge::Results::status);
+    .def_readonly("component_dose_gy", &g4bridge::Results::component_dose_gy);
 
   // expose reusable Geant4 session
   py::class_<g4bridge::Session>(m, "Session")

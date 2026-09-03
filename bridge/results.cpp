@@ -18,7 +18,6 @@ void Results::ResetRuntime()
   component_edep_mev.clear();
   component_mass_kg.clear();
   component_dose_gy.clear();
-  status = "reset";
 }
 
 }  // namespace g4bridge
