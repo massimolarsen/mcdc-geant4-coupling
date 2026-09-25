@@ -3,6 +3,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 #include "G4Box.hh"
@@ -11,6 +12,8 @@
 #include "G4Material.hh"
 #include "G4NistManager.hh"
 #include "G4PVPlacement.hh"
+#include "G4ProductionCuts.hh"
+#include "G4Region.hh"
 #include "G4SystemOfUnits.hh"
 #include "G4ThreeVector.hh"
 
@@ -84,11 +87,13 @@ DetectorConstruction::DetectorConstruction(
   const std::array<double, 3>& world_size_mm,
   const std::array<double, 3>& detector_size_mm,
   const std::string& envelope_material,
-  std::vector<DeviceComponent> components)
+  std::vector<DeviceComponent> components,
+  double em_production_cut_mm)
     : world_size_mm_(world_size_mm),
       detector_size_mm_(detector_size_mm),
       envelope_material_(envelope_material),
-      components_(std::move(components))
+      components_(std::move(components)),
+      em_production_cut_mm_(em_production_cut_mm)
 {
 }
 
@@ -129,6 +134,7 @@ G4VPhysicalVolume* DetectorConstruction::Construct()
 
   scoring_volumes_.clear();
   scoring_names_.clear();
+  electronics_region_ = nullptr;
   std::unordered_map<std::string, std::size_t> component_indices;
   component_indices.reserve(components_.size());
   for (std::size_t i = 0; i < components_.size(); ++i) {
@@ -183,6 +189,35 @@ G4VPhysicalVolume* DetectorConstruction::Construct()
     if (component.score) {
       scoring_volumes_.push_back(logic_components[i]);
       scoring_names_.push_back(component.name);
+    }
+  }
+
+  if (em_production_cut_mm_ > 0.0) {
+    std::unordered_set<std::size_t> roots;
+    for (std::size_t i = 0; i < components_.size(); ++i) {
+      if (!components_[i].score) continue;
+      const auto& parent = components_[i].parent;
+      roots.insert(parent.empty() ? i : component_indices.at(parent));
+    }
+    if (!roots.empty()) {
+      electronics_region_ = new G4Region("ElectronicsRegion");
+      for (const auto root : roots) {
+        bool nested = false;
+        std::string parent = components_[root].parent;
+        while (!parent.empty()) {
+          const auto ancestor = component_indices.at(parent);
+          if (roots.count(ancestor)) nested = true;
+          parent = components_[ancestor].parent;
+        }
+        if (!nested) electronics_region_->AddRootLogicalVolume(logic_components[root]);
+      }
+      auto* cuts = new G4ProductionCuts();
+      const G4double em_cut = em_production_cut_mm_ * mm;
+      cuts->SetProductionCut(em_cut, "gamma");
+      cuts->SetProductionCut(em_cut, "e-");
+      cuts->SetProductionCut(em_cut, "e+");
+      cuts->SetProductionCut(0.0, "proton");
+      electronics_region_->SetProductionCuts(cuts);
     }
   }
 

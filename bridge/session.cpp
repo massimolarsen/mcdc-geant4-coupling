@@ -1,7 +1,10 @@
 #include "session.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <limits>
 #include <memory>
@@ -14,6 +17,7 @@
 #include "bank_primary_generator_action.hpp"
 #include "detector_construction.hpp"
 #include "primary_bank.hpp"
+#include "seu_scoring.hpp"
 #include "source_distribution.hpp"
 
 #include "G4Accumulable.hh"
@@ -23,21 +27,33 @@
 #include "G4Event.hh"
 #include "G4HadronicParameters.hh"
 #include "G4LogicalVolume.hh"
+#include "G4Material.hh"
+#include "G4MaterialCutsCouple.hh"
 #ifdef G4MULTITHREADED
 #include "G4MTRunManager.hh"
 #endif
 #include "G4PhysListFactory.hh"
+#include "G4PrimaryParticle.hh"
+#include "G4PrimaryVertex.hh"
+#include "G4ProductionCuts.hh"
+#include "G4ProductionCutsTable.hh"
+#include "G4Region.hh"
 #include "G4Run.hh"
 #include "G4RunManager.hh"
 #include "G4RunManagerFactory.hh"
 #include "G4Step.hh"
+#include "G4Threading.hh"
+#include "G4Track.hh"
 #include "G4SystemOfUnits.hh"
 #include "G4UImanager.hh"
 #include "G4UIsession.hh"
 #include "G4UserEventAction.hh"
 #include "G4UserRunAction.hh"
 #include "G4UserSteppingAction.hh"
+#include "G4UserTrackingAction.hh"
 #include "G4VUserActionInitialization.hh"
+#include "G4VProcess.hh"
+#include "G4Version.hh"
 #include "CLHEP/Random/Random.h"
 
 namespace py = pybind11;
@@ -69,7 +85,15 @@ class BridgeRunAction : public G4UserRunAction
           record_results_(record_results),
           component_edep_(n_components),
           spectrum_counts_(kEdepSpectrumBins, 0.0),
-          spectrum_edep_(kEdepSpectrumBins, 0.0)
+          spectrum_edep_(kEdepSpectrumBins, 0.0),
+          component_niel_(n_components, 0.0),
+          component_ionizing_(n_components, 0.0),
+          species_ionizing_(n_components * kSeUSpeciesCount, 0.0),
+          primary_ionizing_(n_components, 0.0),
+          secondary_ionizing_(n_components, 0.0),
+          ionizing_count_(n_components * kSeUStride, 0.0),
+          ionizing_sumw_(n_components * kSeUStride, 0.0),
+          ionizing_sumw2_(n_components * kSeUStride, 0.0)
     {
       G4AccumulableManager* accumulable_manager = G4AccumulableManager::Instance();
       accumulable_manager->SetVerboseLevel(0);
@@ -82,6 +106,14 @@ class BridgeRunAction : public G4UserRunAction
       }
       accumulable_manager->Register(spectrum_counts_);
       accumulable_manager->Register(spectrum_edep_);
+      accumulable_manager->Register(component_niel_);
+      accumulable_manager->Register(component_ionizing_);
+      accumulable_manager->Register(species_ionizing_);
+      accumulable_manager->Register(primary_ionizing_);
+      accumulable_manager->Register(secondary_ionizing_);
+      accumulable_manager->Register(ionizing_count_);
+      accumulable_manager->Register(ionizing_sumw_);
+      accumulable_manager->Register(ionizing_sumw2_);
     }
 
     void BeginOfRunAction(const G4Run*) override
@@ -98,6 +130,7 @@ class BridgeRunAction : public G4UserRunAction
           kEdepSpectrumMinMeV *
           std::pow(kEdepSpectrumMaxMeV / kEdepSpectrumMinMeV, fraction);
       }
+      ionizing_edges_mev_ = SeUEdgesMeV();
       if (!record_results_) {
         return;
       }
@@ -111,6 +144,16 @@ class BridgeRunAction : public G4UserRunAction
       results_.component_edep_mev.assign(component_edep_.size(), 0.0);
       results_.component_mass_kg.assign(component_edep_.size(), 0.0);
       results_.component_dose_gy.assign(component_edep_.size(), 0.0);
+      results_.component_niel_mev.assign(component_edep_.size(), 0.0);
+      results_.component_ionizing_mev.assign(component_edep_.size(), 0.0);
+      results_.seu_species_names = SeUSpeciesNames();
+      results_.component_species_ionizing_mev.assign(species_ionizing_.size(), 0.0);
+      results_.component_primary_ionizing_mev.assign(component_edep_.size(), 0.0);
+      results_.component_secondary_ionizing_mev.assign(component_edep_.size(), 0.0);
+      results_.component_event_ionizing_edges_mev = ionizing_edges_mev_;
+      results_.component_event_ionizing_count.assign(ionizing_count_.size(), 0.0);
+      results_.component_event_ionizing_sumw.assign(ionizing_sumw_.size(), 0.0);
+      results_.component_event_ionizing_sumw2.assign(ionizing_sumw2_.size(), 0.0);
     }
 
     void EndOfRunAction(const G4Run* run) override
@@ -136,6 +179,10 @@ class BridgeRunAction : public G4UserRunAction
       results_.component_edep_mev.assign(component_edep_.size(), 0.0);
       results_.component_mass_kg.assign(component_edep_.size(), 0.0);
       results_.component_dose_gy.assign(component_edep_.size(), 0.0);
+      results_.component_niel_mev.assign(component_edep_.size(), 0.0);
+      results_.component_ionizing_mev.assign(component_edep_.size(), 0.0);
+      results_.component_primary_ionizing_mev.assign(component_edep_.size(), 0.0);
+      results_.component_secondary_ionizing_mev.assign(component_edep_.size(), 0.0);
       results_.edep_spectrum_counts.assign(kEdepSpectrumBins, 0);
       results_.edep_spectrum_edep_mev.assign(kEdepSpectrumBins, 0.0);
       results_.edep_spectrum_underflow =
@@ -157,6 +204,19 @@ class BridgeRunAction : public G4UserRunAction
         results_.component_mass_kg[i] = component_mass / kg;
         results_.component_dose_gy[i] =
           (component_mass > 0.0) ? (component_edep_value / component_mass) / gray : 0.0;
+        results_.component_niel_mev[i] = component_niel_[i] / MeV;
+        results_.component_ionizing_mev[i] = component_ionizing_[i] / MeV;
+        results_.component_primary_ionizing_mev[i] = primary_ionizing_[i] / MeV;
+        results_.component_secondary_ionizing_mev[i] = secondary_ionizing_[i] / MeV;
+      }
+      results_.seu_species_names = SeUSpeciesNames();
+      for (std::size_t i = 0; i < species_ionizing_.size(); ++i) {
+        results_.component_species_ionizing_mev[i] = species_ionizing_[i] / MeV;
+      }
+      for (std::size_t i = 0; i < ionizing_count_.size(); ++i) {
+        results_.component_event_ionizing_count[i] = ionizing_count_[i];
+        results_.component_event_ionizing_sumw[i] = ionizing_sumw_[i];
+        results_.component_event_ionizing_sumw2[i] = ionizing_sumw2_[i];
       }
       const G4double dose = (scored_mass > 0.0) ? (edep / scored_mass) : 0.0;
 
@@ -193,6 +253,30 @@ class BridgeRunAction : public G4UserRunAction
       spectrum_edep_[bin] += weighted_edep / MeV;
     }
 
+    void AddSeUEvent(
+      const std::vector<G4double>& total,
+      const std::vector<G4double>& niel,
+      const std::vector<G4double>& species_ionizing,
+      const std::vector<G4double>& primary_ionizing,
+      const std::vector<G4double>& secondary_ionizing,
+      G4double event_weight)
+    {
+      for (std::size_t i = 0; i < total.size(); ++i) {
+        const G4double ion = total[i] - niel[i];
+        component_niel_[i] += event_weight * niel[i];
+        component_ionizing_[i] += event_weight * ion;
+        primary_ionizing_[i] += event_weight * primary_ionizing[i];
+        secondary_ionizing_[i] += event_weight * secondary_ionizing[i];
+        const auto slot = i * kSeUStride + SeUBin(ion / MeV, ionizing_edges_mev_);
+        ionizing_count_[slot] += 1.0;
+        ionizing_sumw_[slot] += event_weight;
+        ionizing_sumw2_[slot] += event_weight * event_weight;
+      }
+      for (std::size_t i = 0; i < species_ionizing.size(); ++i) {
+        species_ionizing_[i] += event_weight * species_ionizing[i];
+      }
+    }
+
   private:
     Results& results_;
     bool record_results_;
@@ -202,15 +286,37 @@ class BridgeRunAction : public G4UserRunAction
     std::vector<std::unique_ptr<G4Accumulable<G4double>>> component_edep_;
     G4AccVector<G4double> spectrum_counts_;
     G4AccVector<G4double> spectrum_edep_;
+    G4AccVector<G4double> component_niel_;
+    G4AccVector<G4double> component_ionizing_;
+    G4AccVector<G4double> species_ionizing_;
+    G4AccVector<G4double> primary_ionizing_;
+    G4AccVector<G4double> secondary_ionizing_;
+    G4AccVector<G4double> ionizing_count_;
+    G4AccVector<G4double> ionizing_sumw_;
+    G4AccVector<G4double> ionizing_sumw2_;
     std::vector<G4double> edep_spectrum_edges_mev_;
+    std::vector<double> ionizing_edges_mev_;
 };
 
 class BridgeEventAction : public G4UserEventAction
 {
   public:
-    BridgeEventAction(BridgeRunAction& run_action, std::size_t n_components)
+    BridgeEventAction(
+      BridgeRunAction& run_action,
+      std::size_t n_components,
+      bool record_details,
+      double min_ionizing_mev,
+      std::string diagnostic_dir)
         : run_action_(run_action),
-          component_weighted_edep_(n_components, 0.0)
+          component_weighted_edep_(n_components, 0.0),
+          total_(n_components, 0.0),
+          niel_(n_components, 0.0),
+          species_ionizing_(n_components * kSeUSpeciesCount, 0.0),
+          primary_ionizing_(n_components, 0.0),
+          secondary_ionizing_(n_components, 0.0),
+          record_details_(record_details),
+          min_ionizing_mev_(min_ionizing_mev),
+          diagnostic_dir_(std::move(diagnostic_dir))
     {
     }
 
@@ -220,12 +326,64 @@ class BridgeEventAction : public G4UserEventAction
       raw_edep_ = 0.0;
       edep_ = 0.0;
       std::fill(component_weighted_edep_.begin(), component_weighted_edep_.end(), 0.0);
+      std::fill(total_.begin(), total_.end(), 0.0);
+      std::fill(niel_.begin(), niel_.end(), 0.0);
+      std::fill(species_ionizing_.begin(), species_ionizing_.end(), 0.0);
+      std::fill(primary_ionizing_.begin(), primary_ionizing_.end(), 0.0);
+      std::fill(secondary_ionizing_.begin(), secondary_ionizing_.end(), 0.0);
+      em_count_.fill(0);
+      em_energy_mev_.fill(0.0);
+      entry_rows_.clear();
+      nuclear_rows_.clear();
     }
 
-    void EndOfEventAction(const G4Event*) override
+    void EndOfEventAction(const G4Event* event) override
     {
       // send event energy deposition to the run accumulator
       run_action_.AddEventEdep(raw_edep_, edep_, component_weighted_edep_);
+      const G4double weight = event->GetPrimaryVertex(0)->GetPrimary()->GetWeight();
+      run_action_.AddSeUEvent(
+        total_, niel_, species_ionizing_, primary_ionizing_, secondary_ionizing_, weight);
+
+      if (!record_details_) return;
+      G4double largest = 0.0;
+      for (std::size_t i = 0; i < total_.size(); ++i) {
+        largest = std::max(largest, total_[i] - niel_[i]);
+      }
+      if (largest / MeV < min_ionizing_mev_) return;
+
+      if (!diagnostics_.is_open()) {
+        const auto thread_id = G4Threading::G4GetThreadId();
+        diagnostics_.open(
+          diagnostic_dir_ + "/worker_" + std::to_string(thread_id) + ".tsv",
+          std::ios::app);
+        if (!diagnostics_) throw std::runtime_error("Cannot open Geant4 SEU diagnostic stream.");
+        diagnostics_ << std::setprecision(17);
+      }
+      const auto* run = G4RunManager::GetRunManager()->GetCurrentRun();
+      const int run_id = run->GetRunID();
+      const int event_id = event->GetEventID();
+      for (std::size_t i = 0; i < total_.size(); ++i) {
+        diagnostics_ << "E\t" << run_id << '\t' << event_id << '\t' << i << '\t'
+                     << weight << '\t' << total_[i] / MeV << '\t' << niel_[i] / MeV
+                     << '\t' << (total_[i] - niel_[i]) / MeV << '\t'
+                     << primary_ionizing_[i] / MeV << '\t' << secondary_ionizing_[i] / MeV;
+        for (std::size_t s = 0; s < kSeUSpeciesCount; ++s) {
+          diagnostics_ << '\t' << species_ionizing_[i * kSeUSpeciesCount + s] / MeV;
+        }
+        diagnostics_ << '\n';
+      }
+      diagnostics_ << "M\t" << run_id << '\t' << event_id;
+      for (std::size_t i = 0; i < 3; ++i) {
+        diagnostics_ << '\t' << em_count_[i] << '\t' << em_energy_mev_[i];
+      }
+      diagnostics_ << '\n';
+      for (const auto& row : entry_rows_) {
+        diagnostics_ << "I\t" << run_id << '\t' << event_id << '\t' << row << '\n';
+      }
+      for (const auto& row : nuclear_rows_) {
+        diagnostics_ << "N\t" << run_id << '\t' << event_id << '\t' << row << '\n';
+      }
     }
 
     void AddEdep(std::size_t component_idx, G4double raw_edep, G4double weighted_edep)
@@ -235,11 +393,93 @@ class BridgeEventAction : public G4UserEventAction
       component_weighted_edep_[component_idx] += weighted_edep;
     }
 
+    void AddSeUStep(std::size_t component_idx, const G4Step* step)
+    {
+      const G4double total = step->GetTotalEnergyDeposit();
+      const G4double niel = step->GetNonIonizingEnergyDeposit();
+      if (!std::isfinite(total) || !std::isfinite(niel) || total < -1.e-12 * MeV ||
+          niel < -1.e-12 * MeV || niel > total + 1.e-12 * MeV) {
+        throw std::runtime_error("Geant4 step has invalid total or non-ionizing deposition.");
+      }
+      const G4double ion = total - niel;
+      total_[component_idx] += total;
+      niel_[component_idx] += niel;
+      const G4Track* track = step->GetTrack();
+      const int pdg = track->GetDefinition()->GetPDGEncoding();
+      species_ionizing_[component_idx * kSeUSpeciesCount + SeUSpeciesForPdg(pdg)] += ion;
+      if (track->GetParentID() == 0) {
+        primary_ionizing_[component_idx] += ion;
+      } else {
+        secondary_ionizing_[component_idx] += ion;
+      }
+    }
+
+    void AddEntry(std::size_t component_idx, const G4Step* step)
+    {
+      if (!record_details_) return;
+      const G4Track* track = step->GetTrack();
+      const auto* point = step->GetPreStepPoint();
+      const auto& position = point->GetPosition();
+      const auto& direction = point->GetMomentumDirection();
+      const auto& vertex = track->GetVertexPosition();
+      const auto* origin = track->GetLogicalVolumeAtVertex();
+      const auto* creator = track->GetCreatorProcess();
+      std::ostringstream row;
+      row << std::setprecision(17) << component_idx << '\t' << track->GetTrackID() << '\t'
+          << track->GetParentID() << '\t' << track->GetDefinition()->GetPDGEncoding() << '\t'
+          << point->GetKineticEnergy() / MeV << '\t' << position.x() / mm << '\t'
+          << position.y() / mm << '\t' << position.z() / mm << '\t'
+          << direction.x() << '\t' << direction.y() << '\t' << direction.z() << '\t'
+          << (creator ? creator->GetProcessName() : "primary") << '\t'
+          << vertex.x() / mm << '\t' << vertex.y() / mm << '\t' << vertex.z() / mm
+          << '\t' << track->GetVertexKineticEnergy() / MeV << '\t'
+          << (origin ? origin->GetName() : "");
+      entry_rows_.push_back(row.str());
+    }
+
+    void AddSecondary(const G4Track* track)
+    {
+      if (!record_details_ || track->GetParentID() == 0) return;
+      const int pdg = track->GetDefinition()->GetPDGEncoding();
+      const int code = std::abs(pdg);
+      const double energy_mev = track->GetVertexKineticEnergy() / MeV;
+      if (code == 11 || code == 22) {
+        const std::size_t i = code == 22 ? 2 : (pdg == 11 ? 0 : 1);
+        ++em_count_[i];
+        em_energy_mev_[i] += energy_mev;
+        return;
+      }
+      if (code != 2112 && code != 2212 && code < 1000000000) return;
+      const auto& vertex = track->GetVertexPosition();
+      const auto* origin = track->GetLogicalVolumeAtVertex();
+      const auto* creator = track->GetCreatorProcess();
+      std::ostringstream row;
+      row << std::setprecision(17) << track->GetTrackID() << '\t' << track->GetParentID()
+          << '\t' << pdg << '\t' << energy_mev << '\t' << vertex.x() / mm << '\t'
+          << vertex.y() / mm << '\t' << vertex.z() / mm << '\t'
+          << (origin ? origin->GetName() : "") << '\t'
+          << (creator ? creator->GetProcessName() : "");
+      nuclear_rows_.push_back(row.str());
+    }
+
   private:
     BridgeRunAction& run_action_;
     G4double raw_edep_ = 0.0;
     G4double edep_ = 0.0;
     std::vector<G4double> component_weighted_edep_;
+    std::vector<G4double> total_;
+    std::vector<G4double> niel_;
+    std::vector<G4double> species_ionizing_;
+    std::vector<G4double> primary_ionizing_;
+    std::vector<G4double> secondary_ionizing_;
+    bool record_details_;
+    double min_ionizing_mev_;
+    std::string diagnostic_dir_;
+    std::ofstream diagnostics_;
+    std::array<std::size_t, 3> em_count_{};
+    std::array<double, 3> em_energy_mev_{};
+    std::vector<std::string> entry_rows_;
+    std::vector<std::string> nuclear_rows_;
 };
 
 class BridgeSteppingAction : public G4UserSteppingAction
@@ -269,6 +509,12 @@ class BridgeSteppingAction : public G4UserSteppingAction
         return;
       }
 
+      if (step->GetPreStepPoint()->GetStepStatus() == fGeomBoundary ||
+          (step->GetTrack()->GetCurrentStepNumber() == 1 &&
+           step->GetTrack()->GetParentID() == 0)) {
+        event_action_.AddEntry(component->second, step);
+      }
+      event_action_.AddSeUStep(component->second, step);
       // score weighted energy deposition inside the component
       const G4double edep_step = step->GetTotalEnergyDeposit();
       const G4double weighted_edep_step = edep_step * step->GetPreStepPoint()->GetWeight();
@@ -281,6 +527,20 @@ class BridgeSteppingAction : public G4UserSteppingAction
     bool scoring_volumes_cached_ = false;
 };
 
+class BridgeTrackingAction : public G4UserTrackingAction
+{
+  public:
+    explicit BridgeTrackingAction(BridgeEventAction& event_action) : event_action_(event_action) {}
+
+    void PreUserTrackingAction(const G4Track* track) override
+    {
+      event_action_.AddSecondary(track);
+    }
+
+  private:
+    BridgeEventAction& event_action_;
+};
+
 class BridgeActionInitialization : public G4VUserActionInitialization
 {
   public:
@@ -289,12 +549,18 @@ class BridgeActionInitialization : public G4VUserActionInitialization
       const SourceDistribution& source_distribution,
       Results& results,
       std::size_t n_scoring_components,
-      bool multithreaded)
+      bool multithreaded,
+      bool record_details,
+      double min_ionizing_mev,
+      std::string diagnostic_dir)
         : primary_bank_(primary_bank),
           source_distribution_(source_distribution),
           results_(results),
           n_scoring_components_(n_scoring_components),
-          multithreaded_(multithreaded)
+          multithreaded_(multithreaded),
+          record_details_(record_details),
+          min_ionizing_mev_(min_ionizing_mev),
+          diagnostic_dir_(std::move(diagnostic_dir))
     {
     }
 
@@ -310,9 +576,11 @@ class BridgeActionInitialization : public G4VUserActionInitialization
       auto* run_action =
         new BridgeRunAction(results_, n_scoring_components_, !multithreaded_);
       SetUserAction(run_action);
-      auto* event_action = new BridgeEventAction(*run_action, n_scoring_components_);
+      auto* event_action = new BridgeEventAction(
+        *run_action, n_scoring_components_, record_details_, min_ionizing_mev_, diagnostic_dir_);
       SetUserAction(event_action);
       SetUserAction(new BridgeSteppingAction(*event_action));
+      SetUserAction(new BridgeTrackingAction(*event_action));
     }
 
   private:
@@ -321,6 +589,9 @@ class BridgeActionInitialization : public G4VUserActionInitialization
     Results& results_;
     std::size_t n_scoring_components_;
     bool multithreaded_;
+    bool record_details_;
+    double min_ionizing_mev_;
+    std::string diagnostic_dir_;
 };
 
 class SilentUIsession : public G4UIsession
@@ -340,6 +611,9 @@ Session::Session(SessionConfig config)
 {
   ValidateGeometryConfig(config_);
   results_.physics_list = physics_list_name_;
+  results_.geant4_version = G4Version;
+  results_.em_production_cut_mm = config_.em_production_cut_mm;
+  results_.proton_production_cut_mm = 0.0;
 }
 
 Session::~Session()
@@ -387,7 +661,8 @@ void Session::initialize()
       config_.world_size_mm,
       config_.detector_size_mm,
       config_.envelope_material,
-      config_.device_components));
+      config_.device_components,
+      config_.em_production_cut_mm));
 
   // configure physics list
   G4PhysListFactory phys_factory;
@@ -410,7 +685,10 @@ void Session::initialize()
     *source_distribution_,
     results_,
     CountScoringComponents(config_.device_components),
-    config_.n_threads > 1));
+    config_.n_threads > 1,
+    config_.record_seu_events,
+    config_.diagnostic_min_Eion_mev,
+    config_.diagnostic_dir));
   run_manager_->Initialize();
 
   // silence Geant4 command output
@@ -481,6 +759,26 @@ void Session::beam_on()
 
   // run Geant4 events
   run_manager_->BeamOn(static_cast<int>(n_events));
+
+  // Geant4 populates the material-cuts table during the first BeamOn.
+  results_.electronics_cut_materials.clear();
+  results_.electronics_cut_energy_mev.clear();
+  const auto* detector = static_cast<const DetectorConstruction*>(
+    run_manager_->GetUserDetectorConstruction());
+  if (const auto* electronics = detector->GetElectronicsRegion()) {
+    const auto* table = G4ProductionCutsTable::GetProductionCutsTable();
+    const std::array<const char*, 4> particles = {"gamma", "e-", "e+", "proton"};
+    for (std::size_t i = 0; i < table->GetTableSize(); ++i) {
+      const auto* couple = table->GetMaterialCutsCouple(static_cast<G4int>(i));
+      if (couple->GetProductionCuts() != electronics->GetProductionCuts()) continue;
+      results_.electronics_cut_materials.push_back(couple->GetMaterial()->GetName());
+      for (const char* particle : particles) {
+        const auto index = G4ProductionCuts::GetIndex(particle);
+        results_.electronics_cut_energy_mev.push_back(
+          (*table->GetEnergyCutsVector(static_cast<std::size_t>(index)))[i] / MeV);
+      }
+    }
+  }
 }
 
 Results Session::get_results() const
@@ -547,6 +845,16 @@ void Session::ValidateGeometryConfig(const SessionConfig& config)
   }
   if (config.n_threads < 1) {
     throw std::runtime_error("config.n_threads must be at least 1.");
+  }
+  if (!std::isfinite(config.em_production_cut_mm) || config.em_production_cut_mm < 0.0) {
+    throw std::runtime_error("config.em_production_cut_mm must be finite and non-negative.");
+  }
+  if (!std::isfinite(config.diagnostic_min_Eion_mev) ||
+      config.diagnostic_min_Eion_mev < 0.0) {
+    throw std::runtime_error("config.diagnostic_min_Eion_mev must be finite and non-negative.");
+  }
+  if (config.record_seu_events && config.diagnostic_dir.empty()) {
+    throw std::runtime_error("config.diagnostic_dir is required when recording SEU events.");
   }
 
   // require detector to fit inside world

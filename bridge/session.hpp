@@ -31,6 +31,10 @@ struct SessionConfig
   std::string physics_list = "QGSP_BIC";
   long random_seed = 1;
   int n_threads = 1;
+  double em_production_cut_mm = 0.0;
+  bool record_seu_events = false;
+  double diagnostic_min_Eion_mev = 0.001;
+  std::string diagnostic_dir;
 };
 
 class Session

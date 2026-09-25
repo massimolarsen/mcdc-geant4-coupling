@@ -75,6 +75,10 @@ target_include_directories(device_geometry_mass_test PRIVATE ${Geant4_INCLUDE_DI
 target_link_libraries(device_geometry_mass_test PRIVATE core pybind11::embed Python::Python)
 add_test(NAME device_geometry_mass_test COMMAND device_geometry_mass_test)
 
+add_test(NAME seu_scoring_test
+  COMMAND ${Python_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/seu_scoring_test.py
+          ${CMAKE_CURRENT_BINARY_DIR})
+
 set(B1_SCRIPTS
   exampleB1.in
   exampleB1.out

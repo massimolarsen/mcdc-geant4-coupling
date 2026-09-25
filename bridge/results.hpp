@@ -13,7 +13,13 @@ struct Results
 {
   // session state
   std::string physics_list = "";
+  std::string geant4_version = "";
   std::size_t loaded_primaries = 0;
+  double em_production_cut_mm = 0.0;
+  double proton_production_cut_mm = 0.0;
+  std::vector<std::string> electronics_cut_materials;
+  // One row per material; columns are gamma, e-, e+, proton.
+  std::vector<double> electronics_cut_energy_mev;
 
   // most recent run summary
   std::size_t last_events_run = 0;
@@ -28,6 +34,16 @@ struct Results
   std::vector<double> component_edep_mev;
   std::vector<double> component_mass_kg;
   std::vector<double> component_dose_gy;
+  std::vector<double> component_niel_mev;
+  std::vector<double> component_ionizing_mev;
+  std::vector<std::string> seu_species_names;
+  std::vector<double> component_species_ionizing_mev;
+  std::vector<double> component_primary_ionizing_mev;
+  std::vector<double> component_secondary_ionizing_mev;
+  std::vector<double> component_event_ionizing_edges_mev;
+  std::vector<double> component_event_ionizing_count;
+  std::vector<double> component_event_ionizing_sumw;
+  std::vector<double> component_event_ionizing_sumw2;
 
   // clear fields that are produced by a run or source load
   void ResetRuntime();

@@ -18,6 +18,18 @@ void Results::ResetRuntime()
   component_edep_mev.clear();
   component_mass_kg.clear();
   component_dose_gy.clear();
+  component_niel_mev.clear();
+  component_ionizing_mev.clear();
+  seu_species_names.clear();
+  component_species_ionizing_mev.clear();
+  component_primary_ionizing_mev.clear();
+  component_secondary_ionizing_mev.clear();
+  component_event_ionizing_edges_mev.clear();
+  component_event_ionizing_count.clear();
+  component_event_ionizing_sumw.clear();
+  component_event_ionizing_sumw2.clear();
+  electronics_cut_materials.clear();
+  electronics_cut_energy_mev.clear();
 }
 
 }  // namespace g4bridge
