@@ -19,6 +19,7 @@ namespace g4bridge
 
 class PrimaryBank;
 class SourceDistribution;
+struct ProgressState;
 
 struct SessionConfig
 {
@@ -96,6 +97,7 @@ class Session
     std::unique_ptr<G4UIsession> silent_ui_session_;
     std::unique_ptr<PrimaryBank> primary_bank_;
     std::unique_ptr<SourceDistribution> source_distribution_;
+    std::shared_ptr<ProgressState> progress_state_;
     Results results_;
 };
 

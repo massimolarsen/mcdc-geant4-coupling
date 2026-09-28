@@ -2,12 +2,15 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -60,6 +63,14 @@ namespace py = pybind11;
 
 namespace g4bridge
 {
+
+struct ProgressState
+{
+  std::atomic<std::size_t> completed{0};
+  std::size_t total = 0;
+  std::chrono::steady_clock::time_point started;
+  std::mutex output_mutex;
+};
 
 namespace
 {
@@ -306,7 +317,8 @@ class BridgeEventAction : public G4UserEventAction
       std::size_t n_components,
       bool record_details,
       double min_ionizing_mev,
-      std::string diagnostic_dir)
+      std::string diagnostic_dir,
+      std::shared_ptr<ProgressState> progress_state)
         : run_action_(run_action),
           component_weighted_edep_(n_components, 0.0),
           total_(n_components, 0.0),
@@ -316,7 +328,8 @@ class BridgeEventAction : public G4UserEventAction
           secondary_ionizing_(n_components, 0.0),
           record_details_(record_details),
           min_ionizing_mev_(min_ionizing_mev),
-          diagnostic_dir_(std::move(diagnostic_dir))
+          diagnostic_dir_(std::move(diagnostic_dir)),
+          progress_state_(std::move(progress_state))
     {
     }
 
@@ -344,6 +357,16 @@ class BridgeEventAction : public G4UserEventAction
       const G4double weight = event->GetPrimaryVertex(0)->GetPrimary()->GetWeight();
       run_action_.AddSeUEvent(
         total_, niel_, species_ionizing_, primary_ionizing_, secondary_ionizing_, weight);
+
+      const auto completed = progress_state_->completed.fetch_add(1) + 1;
+      const auto percent = 100 * completed / progress_state_->total;
+      if (percent > 100 * (completed - 1) / progress_state_->total) {
+        const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+          std::chrono::steady_clock::now() - progress_state_->started).count();
+        std::lock_guard<std::mutex> lock(progress_state_->output_mutex);
+        std::cerr << "Geant4 progress: " << completed << "/" << progress_state_->total
+                  << " events (" << percent << "%) elapsed=" << elapsed << "s" << std::endl;
+      }
 
       if (!record_details_) return;
       G4double largest = 0.0;
@@ -475,6 +498,7 @@ class BridgeEventAction : public G4UserEventAction
     bool record_details_;
     double min_ionizing_mev_;
     std::string diagnostic_dir_;
+    std::shared_ptr<ProgressState> progress_state_;
     std::ofstream diagnostics_;
     std::array<std::size_t, 3> em_count_{};
     std::array<double, 3> em_energy_mev_{};
@@ -552,7 +576,8 @@ class BridgeActionInitialization : public G4VUserActionInitialization
       bool multithreaded,
       bool record_details,
       double min_ionizing_mev,
-      std::string diagnostic_dir)
+      std::string diagnostic_dir,
+      std::shared_ptr<ProgressState> progress_state)
         : primary_bank_(primary_bank),
           source_distribution_(source_distribution),
           results_(results),
@@ -560,7 +585,8 @@ class BridgeActionInitialization : public G4VUserActionInitialization
           multithreaded_(multithreaded),
           record_details_(record_details),
           min_ionizing_mev_(min_ionizing_mev),
-          diagnostic_dir_(std::move(diagnostic_dir))
+          diagnostic_dir_(std::move(diagnostic_dir)),
+          progress_state_(std::move(progress_state))
     {
     }
 
@@ -577,7 +603,8 @@ class BridgeActionInitialization : public G4VUserActionInitialization
         new BridgeRunAction(results_, n_scoring_components_, !multithreaded_);
       SetUserAction(run_action);
       auto* event_action = new BridgeEventAction(
-        *run_action, n_scoring_components_, record_details_, min_ionizing_mev_, diagnostic_dir_);
+        *run_action, n_scoring_components_, record_details_, min_ionizing_mev_, diagnostic_dir_,
+        progress_state_);
       SetUserAction(event_action);
       SetUserAction(new BridgeSteppingAction(*event_action));
       SetUserAction(new BridgeTrackingAction(*event_action));
@@ -592,6 +619,7 @@ class BridgeActionInitialization : public G4VUserActionInitialization
     bool record_details_;
     double min_ionizing_mev_;
     std::string diagnostic_dir_;
+    std::shared_ptr<ProgressState> progress_state_;
 };
 
 class SilentUIsession : public G4UIsession
@@ -607,7 +635,8 @@ Session::Session(SessionConfig config)
     : config_(std::move(config)),
       physics_list_name_(ResolvePhysicsList(config_)),
       primary_bank_(std::make_unique<PrimaryBank>()),
-      source_distribution_(std::make_unique<SourceDistribution>())
+      source_distribution_(std::make_unique<SourceDistribution>()),
+      progress_state_(std::make_shared<ProgressState>())
 {
   ValidateGeometryConfig(config_);
   results_.physics_list = physics_list_name_;
@@ -688,7 +717,8 @@ void Session::initialize()
     config_.n_threads > 1,
     config_.record_seu_events,
     config_.diagnostic_min_Eion_mev,
-    config_.diagnostic_dir));
+    config_.diagnostic_dir,
+    progress_state_));
   run_manager_->Initialize();
 
   // silence Geant4 command output
@@ -758,6 +788,9 @@ void Session::beam_on()
   }
 
   // run Geant4 events
+  progress_state_->completed = 0;
+  progress_state_->total = n_events;
+  progress_state_->started = std::chrono::steady_clock::now();
   run_manager_->BeamOn(static_cast<int>(n_events));
 
   // Geant4 populates the material-cuts table during the first BeamOn.
