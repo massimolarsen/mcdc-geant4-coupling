@@ -5,14 +5,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-set(
-  Geant4_DIR
-  "/Users/massimolarsen/Documents/Repos/geant/geant4-v11.4.0-install/lib/cmake/Geant4"
-  CACHE PATH
-  "Path to Geant4Config.cmake"
-)
-
-find_package(Geant4 REQUIRED ui_all vis_all)
+find_package(Geant4 11.3.2 REQUIRED ui_all vis_all)
 
 # Prefer Python from the currently activated conda environment.
 if(NOT Python_ROOT_DIR AND DEFINED ENV{CONDA_PREFIX})
@@ -40,6 +33,7 @@ add_library(core
   bridge/bank_primary_generator_action.cpp
   bridge/results.cpp
 )
+set_target_properties(core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_include_directories(core
   PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/bridge
@@ -72,7 +66,7 @@ add_executable(device_geometry_mass_test
   tests/device_geometry_mass_test.cpp
 )
 target_include_directories(device_geometry_mass_test PRIVATE ${Geant4_INCLUDE_DIRS})
-target_link_libraries(device_geometry_mass_test PRIVATE core pybind11::embed Python::Python)
+target_link_libraries(device_geometry_mass_test PRIVATE core pybind11::embed Python::Python ${Geant4_LIBRARIES})
 add_test(NAME device_geometry_mass_test COMMAND device_geometry_mass_test)
 
 add_test(NAME seu_scoring_test
