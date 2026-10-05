@@ -77,7 +77,7 @@ int main()
         3,
         1);
 
-      const g4bridge::Primary p = distribution.Sample();
+      const g4bridge::Primary p = distribution.Sample(0);
 
       if (face == 0) {
         Require(p.x_mm == -10.0, "xmin sample should be pinned on x_min.");
@@ -107,6 +107,65 @@ int main()
 
       RequireRange(p.energy_mev, 13.99, 14.01, "sample energy is outside bin.");
       Require(std::abs(p.uz) <= 0.001, "sample direction should use selected mu bin.");
+      Require(p.particle_id == 2112, "default source species should be neutron.");
+    }
+
+    // Species components own consecutive event ranges in load order, and each
+    // weights its events by its own total weight over its own event count.
+    {
+      auto uniform_weights = [](double value) {
+        py::array_t<double> weights(6);
+        auto weight = weights.mutable_unchecked<1>();
+        for (py::ssize_t i = 0; i < weight.shape(0); ++i) {
+          weight(i) = value;
+        }
+        return weights;
+      };
+
+      g4bridge::SourceDistribution distribution;
+      distribution.Load(
+        box_bounds_mm,
+        Array1D({-1.0, 1.0}),
+        Array1D({-3.0, 3.0}),
+        Array1D({100.0, 200.0}),
+        uniform_weights(1.0),
+        1,
+        1,
+        2,
+        2212);
+      distribution.Load(
+        box_bounds_mm,
+        Array1D({-1.0, 1.0}),
+        Array1D({-3.0, 3.0}),
+        Array1D({1.0, 2.0}),
+        uniform_weights(0.5),
+        1,
+        1,
+        3,
+        2112);
+
+      Require(distribution.Size() == 5, "total events should sum the components.");
+      for (std::size_t event_id = 0; event_id < 5; ++event_id) {
+        const g4bridge::Primary p = distribution.Sample(event_id);
+        if (event_id < 2) {
+          Require(p.particle_id == 2212, "first events should be protons.");
+          Require(std::abs(p.weight - 3.0) < 1e-12, "proton weight should be 6/2.");
+          RequireRange(p.energy_mev, 100.0, 200.0, "proton energy is outside bin.");
+        } else {
+          Require(p.particle_id == 2112, "later events should be neutrons.");
+          Require(std::abs(p.weight - 1.0) < 1e-12, "neutron weight should be 3/3.");
+          RequireRange(p.energy_mev, 1.0, 2.0, "neutron energy is outside bin.");
+        }
+      }
+
+      bool threw = false;
+      try {
+        distribution.Sample(5);
+      }
+      catch (const std::runtime_error&) {
+        threw = true;
+      }
+      Require(threw, "sampling past the loaded events should throw.");
     }
 
     return 0;

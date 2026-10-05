@@ -68,6 +68,9 @@ def main():
         assert sum(result.component_event_ionizing_count) == 200
         assert abs(sum(result.component_event_ionizing_sumw) - 40.0) < 1e-10
         assert abs(sum(result.component_event_ionizing_sumw2) - 8.0) < 1e-10
+        assert len(result.component_ionizing_sum_sq_mev2) == 2
+        assert len(result.component_species_ionizing_sum_sq_mev2) == 14
+        assert len(result.component_species_positive_events) == 14
         for i in range(2):
             total = result.component_edep_mev[i]
             niel = result.component_niel_mev[i]
@@ -77,6 +80,18 @@ def main():
             assert abs(sum(species) - ion) < 1e-8
             assert abs(result.component_primary_ionizing_mev[i] +
                        result.component_secondary_ionizing_mev[i] - ion) < 1e-8
+            assert result.component_ionizing_sum_sq_mev2[i] >= ion * ion / 100 - 1e-10
+            # per-primary-species scores add back up to the species-blind totals
+            by_primary = result.component_primary_species_ionizing_mev[i * 7:(i + 1) * 7]
+            assert abs(sum(by_primary) - ion) < 1e-8
+            edep_by_primary = result.component_primary_species_edep_mev[i * 7:(i + 1) * 7]
+            assert abs(sum(edep_by_primary) - total) < 1e-8
+            for j in range(7):
+                index = i * 7 + j
+                count = result.component_species_positive_events[index]
+                assert 0 <= count <= 100
+                if count == 0:
+                    assert result.component_species_ionizing_sum_sq_mev2[index] == 0
         lines = pathlib.Path(diagnostic_dir, "worker_-1.tsv").read_text().splitlines()
         selected = [line for line in lines if line.startswith("M\t")]
         assert 0 < len(selected) < 100

@@ -31,7 +31,7 @@ void BankPrimaryGeneratorAction::GeneratePrimaries(G4Event* event)
   // choose active source for this event
   const std::size_t event_id = static_cast<std::size_t>(event->GetEventID());
   if (source_distribution_.Loaded()) {
-    GeneratePrimary(*event, source_distribution_.Sample());
+    GeneratePrimary(*event, source_distribution_.Sample(event_id));
     return;
   }
 

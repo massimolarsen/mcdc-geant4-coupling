@@ -61,7 +61,7 @@ void RequireIncreasingEdges(const std::vector<double>& edges, const char* name)
 
 }  // namespace
 
-void SourceDistribution::Load(
+void SourceComponent::Load(
   const py::array_t<double, py::array::c_style | py::array::forcecast>& box_bounds_mm,
   const py::array_t<double, py::array::c_style | py::array::forcecast>& mu_edges,
   const py::array_t<double, py::array::c_style | py::array::forcecast>& azi_edges,
@@ -69,7 +69,8 @@ void SourceDistribution::Load(
   const py::array_t<double, py::array::c_style | py::array::forcecast>& weights,
   std::size_t n_u,
   std::size_t n_v,
-  std::size_t n_events)
+  std::size_t n_events,
+  int particle_id)
 {
   if (n_events == 0) {
     throw std::runtime_error("source distribution n_events must be > 0.");
@@ -136,27 +137,11 @@ void SourceDistribution::Load(
     throw std::runtime_error("weights must contain positive total probability.");
   }
 
+  particle_id_ = particle_id;
   n_events_ = n_events;
-  loaded_ = true;
 }
 
-void SourceDistribution::Clear()
-{
-  cdf_.clear();
-  mu_edges_.clear();
-  azi_edges_.clear();
-  energy_edges_mev_.clear();
-  n_events_ = 0;
-  n_mu_ = 0;
-  n_azi_ = 0;
-  n_energy_ = 0;
-  n_u_ = 0;
-  n_v_ = 0;
-  total_weight_ = 0.0;
-  loaded_ = false;
-}
-
-Primary SourceDistribution::Sample() const
+Primary SourceComponent::Sample() const
 {
   // sample source distribution bin
   const double source_pick = G4UniformRand() * total_weight_;
@@ -177,7 +162,7 @@ Primary SourceDistribution::Sample() const
 
   // initialize particle values
   Primary p{};
-  p.particle_id = 2112;
+  p.particle_id = particle_id_;
   p.weight = total_weight_ / static_cast<double>(n_events_);
   p.time_ns = 0.0;
 
@@ -226,6 +211,47 @@ Primary SourceDistribution::Sample() const
   }
 
   return p;
+}
+
+void SourceDistribution::Load(
+  const py::array_t<double, py::array::c_style | py::array::forcecast>& box_bounds_mm,
+  const py::array_t<double, py::array::c_style | py::array::forcecast>& mu_edges,
+  const py::array_t<double, py::array::c_style | py::array::forcecast>& azi_edges,
+  const py::array_t<double, py::array::c_style | py::array::forcecast>& energy_edges_mev,
+  const py::array_t<double, py::array::c_style | py::array::forcecast>& weights,
+  std::size_t n_u,
+  std::size_t n_v,
+  std::size_t n_events,
+  int particle_id)
+{
+  SourceComponent component;
+  component.Load(
+    box_bounds_mm, mu_edges, azi_edges, energy_edges_mev, weights, n_u, n_v, n_events,
+    particle_id);
+
+  n_events_total_ += component.Size();
+  event_ends_.push_back(n_events_total_);
+  components_.push_back(std::move(component));
+}
+
+void SourceDistribution::Clear()
+{
+  components_.clear();
+  event_ends_.clear();
+  n_events_total_ = 0;
+}
+
+Primary SourceDistribution::Sample(std::size_t event_id) const
+{
+  // event ranges are assigned to components in load order
+  const auto it = std::upper_bound(event_ends_.begin(), event_ends_.end(), event_id);
+  if (it == event_ends_.end()) {
+    std::ostringstream msg;
+    msg << "Event " << event_id << " is outside the " << n_events_total_
+        << " loaded source-distribution events.";
+    throw std::runtime_error(msg.str());
+  }
+  return components_[static_cast<std::size_t>(std::distance(event_ends_.begin(), it))].Sample();
 }
 
 }  // namespace g4bridge

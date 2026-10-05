@@ -58,21 +58,54 @@ PYBIND11_MODULE(geant4_bridge, m)
     .def_readonly("electronics_cut_energy_mev", &g4bridge::Results::electronics_cut_energy_mev)
     .def_readonly("component_niel_mev", &g4bridge::Results::component_niel_mev)
     .def_readonly("component_ionizing_mev", &g4bridge::Results::component_ionizing_mev)
+    .def_readonly("component_ionizing_sum_sq_mev2", &g4bridge::Results::component_ionizing_sum_sq_mev2)
     .def_readonly("seu_species_names", &g4bridge::Results::seu_species_names)
     .def_readonly("component_species_ionizing_mev", &g4bridge::Results::component_species_ionizing_mev)
+    .def_readonly("component_species_ionizing_sum_sq_mev2", &g4bridge::Results::component_species_ionizing_sum_sq_mev2)
+    .def_readonly("component_species_positive_events", &g4bridge::Results::component_species_positive_events)
     .def_readonly("component_primary_ionizing_mev", &g4bridge::Results::component_primary_ionizing_mev)
     .def_readonly("component_secondary_ionizing_mev", &g4bridge::Results::component_secondary_ionizing_mev)
     .def_readonly("component_event_ionizing_edges_mev", &g4bridge::Results::component_event_ionizing_edges_mev)
     .def_readonly("component_event_ionizing_count", &g4bridge::Results::component_event_ionizing_count)
     .def_readonly("component_event_ionizing_sumw", &g4bridge::Results::component_event_ionizing_sumw)
-    .def_readonly("component_event_ionizing_sumw2", &g4bridge::Results::component_event_ionizing_sumw2);
+    .def_readonly("component_event_ionizing_sumw2", &g4bridge::Results::component_event_ionizing_sumw2)
+    .def_readonly(
+      "component_primary_species_edep_mev",
+      &g4bridge::Results::component_primary_species_edep_mev)
+    .def_readonly(
+      "component_primary_species_ionizing_mev",
+      &g4bridge::Results::component_primary_species_ionizing_mev)
+    .def_readonly(
+      "component_primary_species_ionizing_sum_sq_mev2",
+      &g4bridge::Results::component_primary_species_ionizing_sum_sq_mev2)
+    .def_readonly(
+      "component_primary_species_event_ionizing_count",
+      &g4bridge::Results::component_primary_species_event_ionizing_count)
+    .def_readonly(
+      "component_primary_species_event_ionizing_sumw",
+      &g4bridge::Results::component_primary_species_event_ionizing_sumw)
+    .def_readonly(
+      "component_primary_species_event_ionizing_sumw2",
+      &g4bridge::Results::component_primary_species_event_ionizing_sumw2);
 
   // expose reusable Geant4 session
   py::class_<g4bridge::Session>(m, "Session")
     .def(py::init<g4bridge::SessionConfig>(), py::arg("config"))
     .def("initialize", &g4bridge::Session::initialize)
     .def("load_primaries", &g4bridge::Session::load_primaries)
-    .def("load_source_distribution", &g4bridge::Session::load_source_distribution)
+    .def(
+      "load_source_distribution",
+      &g4bridge::Session::load_source_distribution,
+      py::arg("box_bounds_mm"),
+      py::arg("mu_edges"),
+      py::arg("azi_edges"),
+      py::arg("energy_edges_mev"),
+      py::arg("weights"),
+      py::arg("n_u"),
+      py::arg("n_v"),
+      py::arg("n_events"),
+      py::arg("particle_id") = 2112)
+    .def("clear_source_distributions", &g4bridge::Session::clear_source_distributions)
     .def("beam_on", &g4bridge::Session::beam_on, py::call_guard<py::gil_scoped_release>())
     .def("get_results", &g4bridge::Session::get_results)
     .def("close", &g4bridge::Session::close);

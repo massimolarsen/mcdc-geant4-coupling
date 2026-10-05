@@ -36,14 +36,24 @@ struct Results
   std::vector<double> component_dose_gy;
   std::vector<double> component_niel_mev;
   std::vector<double> component_ionizing_mev;
+  std::vector<double> component_ionizing_sum_sq_mev2;
   std::vector<std::string> seu_species_names;
   std::vector<double> component_species_ionizing_mev;
+  std::vector<double> component_species_ionizing_sum_sq_mev2;
+  std::vector<std::size_t> component_species_positive_events;
   std::vector<double> component_primary_ionizing_mev;
   std::vector<double> component_secondary_ionizing_mev;
   std::vector<double> component_event_ionizing_edges_mev;
   std::vector<double> component_event_ionizing_count;
   std::vector<double> component_event_ionizing_sumw;
   std::vector<double> component_event_ionizing_sumw2;
+  // split by primary species (SeU species order): component x species [x SeU bin]
+  std::vector<double> component_primary_species_edep_mev;
+  std::vector<double> component_primary_species_ionizing_mev;
+  std::vector<double> component_primary_species_ionizing_sum_sq_mev2;
+  std::vector<double> component_primary_species_event_ionizing_count;
+  std::vector<double> component_primary_species_event_ionizing_sumw;
+  std::vector<double> component_primary_species_event_ionizing_sumw2;
 
   // clear fields that are produced by a run or source load
   void ResetRuntime();

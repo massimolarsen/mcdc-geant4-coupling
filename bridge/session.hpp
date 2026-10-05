@@ -57,7 +57,7 @@ class Session
       const pybind11::array_t<double, pybind11::array::c_style | pybind11::array::forcecast>&
         primaries);
 
-    // load sampled source distribution
+    // append one species' sampled source distribution
     void load_source_distribution(
       const pybind11::array_t<double, pybind11::array::c_style | pybind11::array::forcecast>&
         box_bounds_mm,
@@ -71,7 +71,11 @@ class Session
         weights,
       std::size_t n_u,
       std::size_t n_v,
-      std::size_t n_events);
+      std::size_t n_events,
+      int particle_id = 2112);
+
+    // drop loaded source-distribution components
+    void clear_source_distributions();
 
     // run the active Geant4 source
     void beam_on();
