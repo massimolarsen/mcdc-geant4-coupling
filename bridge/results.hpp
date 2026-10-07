@@ -6,6 +6,8 @@
 #include <string>
 #include <vector>
 
+#include "recorded_tracks.hpp"
+
 namespace g4bridge
 {
 
@@ -54,6 +56,9 @@ struct Results
   std::vector<double> component_primary_species_event_ionizing_count;
   std::vector<double> component_primary_species_event_ionizing_sumw;
   std::vector<double> component_primary_species_event_ionizing_sumw2;
+
+  // tracks of the last event, when SessionConfig::record_tracks is set
+  RecordedTracks tracks;
 
   // clear fields that are produced by a run or source load
   void ResetRuntime();

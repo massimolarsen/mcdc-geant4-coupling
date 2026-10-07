@@ -2,6 +2,9 @@
 #include <pybind11/stl.h>
 
 #include "session.hpp"
+#ifdef G4BRIDGE_HAS_VIEWER
+#include "event_viewer.hpp"
+#endif
 
 namespace py = pybind11;
 
@@ -33,7 +36,31 @@ PYBIND11_MODULE(geant4_bridge, m)
     .def_readwrite("em_production_cut_mm", &g4bridge::SessionConfig::em_production_cut_mm)
     .def_readwrite("record_seu_events", &g4bridge::SessionConfig::record_seu_events)
     .def_readwrite("diagnostic_min_Eion_mev", &g4bridge::SessionConfig::diagnostic_min_Eion_mev)
-    .def_readwrite("diagnostic_dir", &g4bridge::SessionConfig::diagnostic_dir);
+    .def_readwrite("diagnostic_dir", &g4bridge::SessionConfig::diagnostic_dir)
+    .def_readwrite("rng_state_min_Eion_mev", &g4bridge::SessionConfig::rng_state_min_Eion_mev)
+    .def_readwrite("replay_mode", &g4bridge::SessionConfig::replay_mode)
+    .def_readwrite("event_id_offset", &g4bridge::SessionConfig::event_id_offset)
+    .def_readwrite("replay_state", &g4bridge::SessionConfig::replay_state)
+    .def_readwrite("record_tracks", &g4bridge::SessionConfig::record_tracks);
+
+  // expose one event's tracks and step points
+  py::class_<g4bridge::RecordedTracks>(m, "RecordedTracks")
+    .def(py::init<>())
+    .def_readwrite("track_id", &g4bridge::RecordedTracks::track_id)
+    .def_readwrite("parent_id", &g4bridge::RecordedTracks::parent_id)
+    .def_readwrite("pdg", &g4bridge::RecordedTracks::pdg)
+    .def_readwrite("particle", &g4bridge::RecordedTracks::particle)
+    .def_readwrite("charge", &g4bridge::RecordedTracks::charge)
+    .def_readwrite("creator_process", &g4bridge::RecordedTracks::creator_process)
+    .def_readwrite("track_point_start", &g4bridge::RecordedTracks::track_point_start)
+    .def_readwrite("x_mm", &g4bridge::RecordedTracks::x_mm)
+    .def_readwrite("y_mm", &g4bridge::RecordedTracks::y_mm)
+    .def_readwrite("z_mm", &g4bridge::RecordedTracks::z_mm)
+    .def_readwrite("t_ns", &g4bridge::RecordedTracks::t_ns)
+    .def_readwrite("ke_mev", &g4bridge::RecordedTracks::ke_mev)
+    .def_readwrite("edep_mev", &g4bridge::RecordedTracks::edep_mev)
+    .def_readwrite("process", &g4bridge::RecordedTracks::process)
+    .def_readwrite("volume", &g4bridge::RecordedTracks::volume);
 
   // expose run results
   py::class_<g4bridge::Results>(m, "RunResult")
@@ -86,7 +113,8 @@ PYBIND11_MODULE(geant4_bridge, m)
       &g4bridge::Results::component_primary_species_event_ionizing_sumw)
     .def_readonly(
       "component_primary_species_event_ionizing_sumw2",
-      &g4bridge::Results::component_primary_species_event_ionizing_sumw2);
+      &g4bridge::Results::component_primary_species_event_ionizing_sumw2)
+    .def_readonly("tracks", &g4bridge::Results::tracks);
 
   // expose reusable Geant4 session
   py::class_<g4bridge::Session>(m, "Session")
@@ -106,7 +134,28 @@ PYBIND11_MODULE(geant4_bridge, m)
       py::arg("n_events"),
       py::arg("particle_id") = 2112)
     .def("clear_source_distributions", &g4bridge::Session::clear_source_distributions)
-    .def("beam_on", &g4bridge::Session::beam_on, py::call_guard<py::gil_scoped_release>())
+    .def(
+      "beam_on",
+      &g4bridge::Session::beam_on,
+      py::arg("n_events") = -1,
+      py::call_guard<py::gil_scoped_release>())
     .def("get_results", &g4bridge::Session::get_results)
     .def("close", &g4bridge::Session::close);
+
+  m.attr("has_viewer") = py::bool_(
+#ifdef G4BRIDGE_HAS_VIEWER
+    true
+#else
+    false
+#endif
+  );
+#ifdef G4BRIDGE_HAS_VIEWER
+  m.def(
+    "view_event",
+    &g4bridge::ViewEvent,
+    py::arg("config"),
+    py::arg("tracks"),
+    py::arg("commands"),
+    "Open Geant4's Qt viewer on recorded tracks inside the config geometry.");
+#endif
 }

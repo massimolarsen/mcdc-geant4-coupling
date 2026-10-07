@@ -57,6 +57,7 @@
 #include "G4VUserActionInitialization.hh"
 #include "G4VProcess.hh"
 #include "G4Version.hh"
+#include "G4VPhysicalVolume.hh"
 #include "CLHEP/Random/Random.h"
 
 namespace py = pybind11;
@@ -398,7 +399,10 @@ class BridgeEventAction : public G4UserEventAction
       bool record_details,
       double min_ionizing_mev,
       std::string diagnostic_dir,
-      std::shared_ptr<ProgressState> progress_state)
+      std::shared_ptr<ProgressState> progress_state,
+      const BankPrimaryGeneratorAction& generator,
+      double rng_state_min_ionizing_mev,
+      RecordedTracks* tracks_out)
         : run_action_(run_action),
           component_weighted_edep_(n_components, 0.0),
           total_(n_components, 0.0),
@@ -409,7 +413,10 @@ class BridgeEventAction : public G4UserEventAction
           record_details_(record_details),
           min_ionizing_mev_(min_ionizing_mev),
           diagnostic_dir_(std::move(diagnostic_dir)),
-          progress_state_(std::move(progress_state))
+          progress_state_(std::move(progress_state)),
+          generator_(generator),
+          rng_state_min_ionizing_mev_(rng_state_min_ionizing_mev),
+          tracks_out_(tracks_out)
     {
     }
 
@@ -428,6 +435,7 @@ class BridgeEventAction : public G4UserEventAction
       em_energy_mev_.fill(0.0);
       entry_rows_.clear();
       nuclear_rows_.clear();
+      tracks_.Clear();
     }
 
     void EndOfEventAction(const G4Event* event) override
@@ -450,6 +458,11 @@ class BridgeEventAction : public G4UserEventAction
         std::lock_guard<std::mutex> lock(progress_state_->output_mutex);
         std::cerr << "Geant4 progress: " << completed << "/" << progress_state_->total
                   << " events (" << percent << "%) elapsed=" << elapsed << "s" << std::endl;
+      }
+
+      if (tracks_out_ != nullptr) {
+        *tracks_out_ = std::move(tracks_);
+        tracks_.Clear();
       }
 
       if (!record_details_) return;
@@ -491,6 +504,46 @@ class BridgeEventAction : public G4UserEventAction
       for (const auto& row : nuclear_rows_) {
         diagnostics_ << "N\t" << run_id << '\t' << event_id << '\t' << row << '\n';
       }
+      if (rng_state_min_ionizing_mev_ > 0.0 && largest / MeV >= rng_state_min_ionizing_mev_) {
+        const auto& state = generator_.EventRngState();
+        diagnostics_ << "R\t" << run_id << '\t' << event_id << '\t';
+        for (std::size_t i = 0; i < state.size(); ++i) {
+          diagnostics_ << (i == 0 ? "" : " ") << state[i];
+        }
+        diagnostics_ << '\n';
+      }
+    }
+
+    void BeginTrack(const G4Track* track)
+    {
+      if (tracks_out_ == nullptr) return;
+      const auto* definition = track->GetDefinition();
+      const auto* creator = track->GetCreatorProcess();
+      tracks_.track_id.push_back(track->GetTrackID());
+      tracks_.parent_id.push_back(track->GetParentID());
+      tracks_.pdg.push_back(definition->GetPDGEncoding());
+      tracks_.particle.push_back(definition->GetParticleName());
+      tracks_.charge.push_back(definition->GetPDGCharge() / eplus);
+      tracks_.creator_process.push_back(creator ? creator->GetProcessName() : "primary");
+      tracks_.track_point_start.push_back(tracks_.x_mm.size());
+      const auto& position = track->GetPosition();
+      const auto* volume = track->GetVolume();
+      tracks_.AddPoint(
+        position.x() / mm, position.y() / mm, position.z() / mm, track->GetGlobalTime() / ns,
+        track->GetKineticEnergy() / MeV, 0.0, "", volume ? volume->GetName() : "");
+    }
+
+    void AddTrackPoint(const G4Step* step)
+    {
+      if (tracks_out_ == nullptr) return;
+      const auto* point = step->GetPostStepPoint();
+      const auto* process = point->GetProcessDefinedStep();
+      const auto* volume = step->GetPreStepPoint()->GetPhysicalVolume();
+      const auto& position = point->GetPosition();
+      tracks_.AddPoint(
+        position.x() / mm, position.y() / mm, position.z() / mm, point->GetGlobalTime() / ns,
+        point->GetKineticEnergy() / MeV, step->GetTotalEnergyDeposit() / MeV,
+        process ? process->GetProcessName() : "", volume ? volume->GetName() : "");
     }
 
     void AddEdep(std::size_t component_idx, G4double raw_edep, G4double weighted_edep)
@@ -588,6 +641,10 @@ class BridgeEventAction : public G4UserEventAction
     std::array<double, 3> em_energy_mev_{};
     std::vector<std::string> entry_rows_;
     std::vector<std::string> nuclear_rows_;
+    const BankPrimaryGeneratorAction& generator_;
+    double rng_state_min_ionizing_mev_;
+    RecordedTracks* tracks_out_;
+    RecordedTracks tracks_;
 };
 
 class BridgeSteppingAction : public G4UserSteppingAction
@@ -597,6 +654,8 @@ class BridgeSteppingAction : public G4UserSteppingAction
 
     void UserSteppingAction(const G4Step* step) override
     {
+      event_action_.AddTrackPoint(step);
+
       // cache scoring volumes on first step
       if (!scoring_volumes_cached_) {
         const auto* det_construction = static_cast<const DetectorConstruction*>(
@@ -642,6 +701,7 @@ class BridgeTrackingAction : public G4UserTrackingAction
 
     void PreUserTrackingAction(const G4Track* track) override
     {
+      event_action_.BeginTrack(track);
       event_action_.AddSecondary(track);
     }
 
@@ -656,20 +716,13 @@ class BridgeActionInitialization : public G4VUserActionInitialization
       const PrimaryBank& primary_bank,
       const SourceDistribution& source_distribution,
       Results& results,
-      std::size_t n_scoring_components,
-      bool multithreaded,
-      bool record_details,
-      double min_ionizing_mev,
-      std::string diagnostic_dir,
+      SessionConfig config,
       std::shared_ptr<ProgressState> progress_state)
         : primary_bank_(primary_bank),
           source_distribution_(source_distribution),
           results_(results),
-          n_scoring_components_(n_scoring_components),
-          multithreaded_(multithreaded),
-          record_details_(record_details),
-          min_ionizing_mev_(min_ionizing_mev),
-          diagnostic_dir_(std::move(diagnostic_dir)),
+          config_(std::move(config)),
+          n_scoring_components_(CountScoringComponents(config_.device_components)),
           progress_state_(std::move(progress_state))
     {
     }
@@ -682,13 +735,20 @@ class BridgeActionInitialization : public G4VUserActionInitialization
     void Build() const override
     {
       // install bridge actions for worker runs
-      SetUserAction(new BankPrimaryGeneratorAction(primary_bank_, source_distribution_));
-      auto* run_action =
-        new BridgeRunAction(results_, n_scoring_components_, !multithreaded_);
+      const bool capture_rng_state =
+        config_.record_seu_events && config_.rng_state_min_Eion_mev > 0.0;
+      auto* generator = new BankPrimaryGeneratorAction(
+        primary_bank_, source_distribution_, static_cast<int>(config_.event_id_offset),
+        config_.replay_mode == "state" ? config_.replay_state : std::vector<unsigned long>{},
+        capture_rng_state);
+      SetUserAction(generator);
+      const bool multithreaded = config_.n_threads > 1 || config_.replay_mode == "seeds";
+      auto* run_action = new BridgeRunAction(results_, n_scoring_components_, !multithreaded);
       SetUserAction(run_action);
       auto* event_action = new BridgeEventAction(
-        *run_action, n_scoring_components_, record_details_, min_ionizing_mev_, diagnostic_dir_,
-        progress_state_);
+        *run_action, n_scoring_components_, config_.record_seu_events,
+        config_.diagnostic_min_Eion_mev, config_.diagnostic_dir, progress_state_, *generator,
+        config_.rng_state_min_Eion_mev, config_.record_tracks ? &results_.tracks : nullptr);
       SetUserAction(event_action);
       SetUserAction(new BridgeSteppingAction(*event_action));
       SetUserAction(new BridgeTrackingAction(*event_action));
@@ -698,13 +758,41 @@ class BridgeActionInitialization : public G4VUserActionInitialization
     const PrimaryBank& primary_bank_;
     const SourceDistribution& source_distribution_;
     Results& results_;
+    SessionConfig config_;
     std::size_t n_scoring_components_;
-    bool multithreaded_;
-    bool record_details_;
-    double min_ionizing_mev_;
-    std::string diagnostic_dir_;
     std::shared_ptr<ProgressState> progress_state_;
 };
+
+#ifdef G4MULTITHREADED
+// MT run manager whose first event gets the seeds event first_event had in an
+// earlier run with the same seed: the master draws nSeedsPerEvent flats per
+// event in event order, so discarding the earlier events' draws lines it up.
+class ReplayMTRunManager : public G4MTRunManager
+{
+  public:
+    explicit ReplayMTRunManager(long first_event) : first_event_(first_event) {}
+
+  protected:
+    G4bool InitializeSeeds(G4int) override
+    {
+      if (!skipped_) {
+        std::vector<G4double> discard(static_cast<std::size_t>(nSeedsPerEvent) * nSeedsMax);
+        long remaining = static_cast<long>(nSeedsPerEvent) * first_event_;
+        while (remaining > 0) {
+          const auto n = std::min<long>(remaining, static_cast<long>(discard.size()));
+          masterRNGEngine->flatArray(static_cast<int>(n), discard.data());
+          remaining -= n;
+        }
+        skipped_ = true;
+      }
+      return false;
+    }
+
+  private:
+    long first_event_;
+    bool skipped_ = false;
+};
+#endif
 
 class SilentUIsession : public G4UIsession
 {
@@ -745,10 +833,15 @@ void Session::initialize()
     return;
   }
 
-  // create Geant4 run manager
-  if (config_.n_threads > 1) {
+  // create Geant4 run manager; a seed replay needs the MT master's seed list
+  const bool replay_seeds = config_.replay_mode == "seeds";
+  if (config_.n_threads > 1 || replay_seeds) {
 #ifdef G4MULTITHREADED
-    run_manager_.reset(G4RunManagerFactory::CreateRunManager(G4RunManagerType::MTOnly));
+    if (replay_seeds) {
+      run_manager_.reset(new ReplayMTRunManager(config_.event_id_offset));
+    } else {
+      run_manager_.reset(G4RunManagerFactory::CreateRunManager(G4RunManagerType::MTOnly));
+    }
     auto* mt_run_manager = dynamic_cast<G4MTRunManager*>(run_manager_.get());
     if (!mt_run_manager) {
       throw std::runtime_error("Failed to create Geant4 MT run manager.");
@@ -794,15 +887,7 @@ void Session::initialize()
 
   // install bridge action stack
   run_manager_->SetUserInitialization(new BridgeActionInitialization(
-    *primary_bank_,
-    *source_distribution_,
-    results_,
-    CountScoringComponents(config_.device_components),
-    config_.n_threads > 1,
-    config_.record_seu_events,
-    config_.diagnostic_min_Eion_mev,
-    config_.diagnostic_dir,
-    progress_state_));
+    *primary_bank_, *source_distribution_, results_, config_, progress_state_));
   run_manager_->Initialize();
 
   // silence Geant4 command output
@@ -863,7 +948,7 @@ void Session::clear_source_distributions()
   results_.loaded_primaries = primary_bank_->Size();
 }
 
-void Session::beam_on()
+void Session::beam_on(long n_events_requested)
 {
   if (!initialized_) {
     throw std::runtime_error("Session must be initialized before beam_on().");
@@ -874,8 +959,15 @@ void Session::beam_on()
   }
 
   // choose event count from the active source
-  const std::size_t n_events =
+  const std::size_t source_size =
     source_distribution_->Loaded() ? source_distribution_->Size() : primary_bank_->Size();
+  std::size_t n_events = source_size;
+  if (n_events_requested >= 0) {
+    n_events = static_cast<std::size_t>(n_events_requested);
+  }
+  if (static_cast<std::size_t>(config_.event_id_offset) + n_events > source_size) {
+    throw std::runtime_error("Requested events run past the end of the loaded source.");
+  }
   if (n_events > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
     throw std::runtime_error("Geant4 source too large for BeamOn(int) event count.");
   }
@@ -981,6 +1073,26 @@ void Session::ValidateGeometryConfig(const SessionConfig& config)
   }
   if (config.record_seu_events && config.diagnostic_dir.empty()) {
     throw std::runtime_error("config.diagnostic_dir is required when recording SEU events.");
+  }
+  if (!std::isfinite(config.rng_state_min_Eion_mev) || config.rng_state_min_Eion_mev < 0.0) {
+    throw std::runtime_error("config.rng_state_min_Eion_mev must be finite and non-negative.");
+  }
+  if (config.replay_mode != "none" && config.replay_mode != "seeds" &&
+      config.replay_mode != "state") {
+    throw std::runtime_error("config.replay_mode must be 'none', 'seeds', or 'state'.");
+  }
+  if (config.event_id_offset < 0 ||
+      config.event_id_offset > std::numeric_limits<int>::max()) {
+    throw std::runtime_error("config.event_id_offset must fit a non-negative Geant4 event ID.");
+  }
+  if (config.replay_mode == "none" && config.event_id_offset != 0) {
+    throw std::runtime_error("config.event_id_offset is only used when replaying events.");
+  }
+  if (config.replay_mode == "state" && config.replay_state.empty()) {
+    throw std::runtime_error("config.replay_state is required for a state replay.");
+  }
+  if ((config.replay_mode != "none" || config.record_tracks) && config.n_threads != 1) {
+    throw std::runtime_error("Replays and track recording run on one Geant4 thread.");
   }
 
   // require detector to fit inside world

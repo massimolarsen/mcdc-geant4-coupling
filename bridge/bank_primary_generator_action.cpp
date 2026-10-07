@@ -13,21 +13,41 @@
 #include "G4PrimaryParticle.hh"
 #include "G4PrimaryVertex.hh"
 #include "G4SystemOfUnits.hh"
+#include "Randomize.hh"
 
 namespace g4bridge
 {
 
 BankPrimaryGeneratorAction::BankPrimaryGeneratorAction(
   const PrimaryBank& primary_bank,
-  const SourceDistribution& source_distribution)
+  const SourceDistribution& source_distribution,
+  int event_id_offset,
+  std::vector<unsigned long> replay_state,
+  bool capture_rng_state)
     : primary_bank_(primary_bank),
       source_distribution_(source_distribution),
-      particle_gun_(std::make_unique<G4ParticleGun>(1))
+      particle_gun_(std::make_unique<G4ParticleGun>(1)),
+      event_id_offset_(event_id_offset),
+      replay_state_(std::move(replay_state)),
+      capture_rng_state_(capture_rng_state)
 {
 }
 
 void BankPrimaryGeneratorAction::GeneratePrimaries(G4Event* event)
 {
+  // Geant4 has just seeded this event; nothing has drawn from it yet
+  if (!replay_state_.empty() && !G4Random::getTheEngine()->get(replay_state_)) {
+    throw std::runtime_error("Replay RNG state does not match the Geant4 random engine.");
+  }
+  if (capture_rng_state_) {
+    rng_state_ = G4Random::getTheEngine()->put();
+  }
+
+  // a replayed event keeps the ID it had in its original run
+  if (event_id_offset_ != 0) {
+    event->SetEventID(event->GetEventID() + event_id_offset_);
+  }
+
   // choose active source for this event
   const std::size_t event_id = static_cast<std::size_t>(event->GetEventID());
   if (source_distribution_.Loaded()) {

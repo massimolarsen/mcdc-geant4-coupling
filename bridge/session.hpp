@@ -36,6 +36,17 @@ struct SessionConfig
   bool record_seu_events = false;
   double diagnostic_min_Eion_mev = 0.001;
   std::string diagnostic_dir;
+  // write each diagnostic event's starting RNG state when its largest SV
+  // ionizing deposit reaches this (0 = off), so it can be replayed exactly
+  double rng_state_min_Eion_mev = 0.0;
+
+  // replay one event of an earlier run: "seeds" regenerates the seeds Geant4's
+  // MT master gave event event_id_offset; "state" restores replay_state
+  std::string replay_mode = "none";
+  long event_id_offset = 0;
+  std::vector<unsigned long> replay_state;
+  // keep every track and step of the event in Results::tracks (one thread only)
+  bool record_tracks = false;
 };
 
 class Session
@@ -77,8 +88,8 @@ class Session
     // drop loaded source-distribution components
     void clear_source_distributions();
 
-    // run the active Geant4 source
-    void beam_on();
+    // run the active Geant4 source, or only its first n_events when given
+    void beam_on(long n_events = -1);
 
     // return latest bridge state and run summary
     [[nodiscard]] Results get_results() const;

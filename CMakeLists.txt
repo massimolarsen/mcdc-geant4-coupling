@@ -7,6 +7,9 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(Geant4 11.3.2 REQUIRED ui_all vis_all)
 
+# the track viewer needs Geant4's Qt UI/vis; builds without it (HPC) skip it
+option(G4BRIDGE_BUILD_VIEWER "Build the Qt event viewer" ${Geant4_qt_FOUND})
+
 # Prefer Python from the currently activated conda environment.
 if(NOT Python_ROOT_DIR AND DEFINED ENV{CONDA_PREFIX})
   set(Python_ROOT_DIR "$ENV{CONDA_PREFIX}")
@@ -33,6 +36,10 @@ add_library(core
   bridge/bank_primary_generator_action.cpp
   bridge/results.cpp
 )
+if(G4BRIDGE_BUILD_VIEWER)
+  target_sources(core PRIVATE bridge/event_viewer.cpp)
+  target_compile_definitions(core PUBLIC G4BRIDGE_HAS_VIEWER)
+endif()
 set_target_properties(core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_include_directories(core
   PUBLIC
@@ -71,6 +78,10 @@ add_test(NAME device_geometry_mass_test COMMAND device_geometry_mass_test)
 
 add_test(NAME seu_scoring_test
   COMMAND ${Python_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/seu_scoring_test.py
+          ${CMAKE_CURRENT_BINARY_DIR})
+
+add_test(NAME event_replay_test
+  COMMAND ${Python_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/event_replay_test.py
           ${CMAKE_CURRENT_BINARY_DIR})
 
 set(B1_SCRIPTS

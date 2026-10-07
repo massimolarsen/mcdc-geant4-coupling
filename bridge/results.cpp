@@ -39,6 +39,7 @@ void Results::ResetRuntime()
   component_primary_species_event_ionizing_sumw2.clear();
   electronics_cut_materials.clear();
   electronics_cut_energy_mev.clear();
+  tracks.Clear();
 }
 
 }  // namespace g4bridge
