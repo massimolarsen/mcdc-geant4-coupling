@@ -45,10 +45,48 @@ G4Material* BuildLiCoO2()
   return material;
 }
 
+// Cured bisphenol-A epoxy resin (DGEBA, C21H24O4), the binder of mold
+// compounds and FR-4.
+G4Material* BuildEpoxy()
+{
+  const G4String name = "Epoxy";
+  if (auto* existing = G4Material::GetMaterial(name, false)) {
+    return existing;
+  }
+
+  auto* nist = G4NistManager::Instance();
+  auto* material = new G4Material(name, 1.2 * g / cm3, 3);
+  material->AddElement(nist->FindOrBuildElement("C"), 21);
+  material->AddElement(nist->FindOrBuildElement("H"), 24);
+  material->AddElement(nist->FindOrBuildElement("O"), 4);
+  return material;
+}
+
+// Epoxy filled with silica, by mass: MoldCompound is a typical IC package
+// compound (80% fused silica), FR4 a glass-epoxy circuit board (52.8% glass).
+G4Material* BuildSilicaEpoxy(const G4String& name, G4double density, G4double silica_fraction)
+{
+  if (auto* existing = G4Material::GetMaterial(name, false)) {
+    return existing;
+  }
+
+  auto* material = new G4Material(name, density, 2);
+  material->AddMaterial(
+    G4NistManager::Instance()->FindOrBuildMaterial("G4_SILICON_DIOXIDE"), silica_fraction);
+  material->AddMaterial(BuildEpoxy(), 1.0 - silica_fraction);
+  return material;
+}
+
 G4Material* ResolveMaterial(const std::string& name)
 {
   if (name == "LiCoO2") {
     return BuildLiCoO2();
+  }
+  if (name == "MoldCompound") {
+    return BuildSilicaEpoxy(name, 1.95 * g / cm3, 0.80);
+  }
+  if (name == "FR4") {
+    return BuildSilicaEpoxy(name, 1.86 * g / cm3, 0.528);
   }
 
   auto* material = G4NistManager::Instance()->FindOrBuildMaterial(name);
